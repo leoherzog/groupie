@@ -1,31 +1,25 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
   <base target="_top">
   <title>Groupie</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7/css/all.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7/js/all.min.js"></script>
   <style>
-    /* The ONLY custom CSS — everything else is Pico defaults. */
     #toast { position: fixed; bottom: 1rem; right: 1rem; max-width: 24rem; z-index: 99; }
     #toast:empty { display: none; } /* don't render an empty card when there's no message */
-    /* ins/del are used only for Pico's green/red colors — drop their underline/strikethrough */
     #toast :is(ins, del) { text-decoration: none; }
     header { display: flex; justify-content: space-between; align-items: center; }
-    #settingAnswer option.change  { color: var(--pico-ins-color); }   /* green = would be a change */
-    #settingAnswer option.current { color: var(--pico-muted-color); } /* muted = current value     */
   </style>
 </head>
 <body>
 
 <header class="container">
   <hgroup>
-    <h1><i class="fa-solid fa-users"></i> Groupie</h1>
+    <h1><span class="fa-solid fa-users" aria-hidden="true"></span> Groupie</h1>
     <p>Google Group admin tools for <strong><?= domain ?></strong></p>
   </hgroup>
-  <button id="refresh" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh Groups</button>
+  <button id="refresh" type="button"><span class="fa-solid fa-arrows-rotate" aria-hidden="true"></span> Refresh Groups</button>
 </header>
 
 <main class="container">
@@ -33,12 +27,12 @@
   <!-- Source group + tabbed actions (no tab selected until the user picks one) -->
   <article>
 
-    <select id="sourceGroup" required><option>Loading…</option></select>
+    <select id="sourceGroup" required aria-label="Source group"><option>Loading…</option></select>
 
-    <div role="group" id="tabs">
-      <button type="button" data-tab="duplicate" class="outline"><i class="fa-solid fa-clone"></i> Duplicate</button>
-      <button type="button" data-tab="setting" class="outline"><i class="fa-solid fa-gear"></i> Change Setting</button>
-      <button type="button" data-tab="copy" class="outline"><i class="fa-solid fa-right-left"></i> Copy All Settings</button>
+    <div role="group" id="tabs" aria-label="Group actions">
+      <button type="button" data-tab="duplicate" class="outline"><span class="fa-solid fa-clone" aria-hidden="true"></span> Duplicate</button>
+      <button type="button" data-tab="setting" class="outline"><span class="fa-solid fa-gear" aria-hidden="true"></span> Change Setting</button>
+      <button type="button" data-tab="copy" class="outline"><span class="fa-solid fa-right-left" aria-hidden="true"></span> Copy All Settings</button>
     </div>
 
     <!-- Tab 1: Duplicate the source group -->
@@ -52,7 +46,7 @@
       <label>New Group Description
         <textarea id="newGroupDescription" rows="3" placeholder="Description"></textarea>
       </label>
-      <button id="dupSubmit" type="submit"><i class="fa-solid fa-clone"></i> Duplicate Group</button>
+      <button id="dupSubmit" type="submit">Duplicate Group</button>
     </form>
 
     <!-- Tab 2: Change a single setting on the source group -->
@@ -65,7 +59,7 @@
           <select id="settingAnswer" disabled><option>Loading…</option></select>
         </label>
       </div>
-      <button id="panelSubmit" type="submit"><i class="fa-solid fa-check"></i> Update Setting</button>
+      <button id="panelSubmit" type="submit">Update Setting</button>
     </form>
 
     <!-- Tab 3: Copy ALL settings from the source group to another -->
@@ -74,17 +68,17 @@
         <select id="copyTo"><option>Loading…</option></select>
       </label>
       <label><input type="checkbox" id="copyDescription" role="switch"> Also copy the group description</label>
-      <button id="copySubmit" type="submit"><i class="fa-solid fa-right-left"></i> Copy Settings</button>
+      <button id="copySubmit" type="submit">Copy Settings</button>
     </form>
   </article>
 
   <!-- Directory accordion -->
   <details id="tool-directory">
-    <summary role="button"><i class="fa-solid fa-address-book"></i> Groups Directory</summary>
+    <summary role="button"><span class="fa-solid fa-address-book" aria-hidden="true"></span> Groups Directory</summary>
     <figure>
       <table>
         <thead>
-          <tr><th>Group</th><th>Members</th><th>Directory Listing</th></tr>
+          <tr><th scope="col">Group</th><th scope="col">Members</th><th scope="col">Directory Listing</th></tr>
         </thead>
         <tbody id="directoryRows"></tbody>
       </table>
@@ -164,8 +158,7 @@
       { name: "Anyone", setting: "ANYONE_CAN_CONTACT" },
       { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_CONTACT" },
       { name: "Members", setting: "ALL_MEMBERS_CAN_CONTACT" },
-      { name: "Managers", setting: "ALL_MANAGERS_CAN_CONTACT" },
-      { name: "Owners", setting: "ALL_OWNERS_CAN_CONTACT" } ] }
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_CONTACT" } ] }
   };
 
   // ----- Helpers -----
@@ -175,8 +168,8 @@
   let toastTimer;
   function toast(html, isError) {
     document.getElementById('toast').innerHTML = isError
-      ? '<del><i class="fa-solid fa-triangle-exclamation"></i> ' + html + '</del>'
-      : '<ins><i class="fa-solid fa-thumbs-up"></i> ' + html + '</ins>';
+      ? '<del><span class="fa-solid fa-triangle-exclamation" aria-hidden="true"></span> ' + html + '</del>'
+      : '<ins><span class="fa-solid fa-thumbs-up" aria-hidden="true"></span> ' + html + '</ins>';
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { document.getElementById('toast').innerHTML = ''; }, 30000);
   }
@@ -213,7 +206,7 @@
     TABS.forEach(b => {
       const active = b.dataset.tab === name;
       b.classList.toggle('outline', !active);
-      b.toggleAttribute('aria-current', active);
+      if (active) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
     });
     document.querySelectorAll('form[data-panel]').forEach(f => f.hidden = f.dataset.panel !== name);
     if (name === 'setting') ensurePanelSettings();
@@ -275,7 +268,7 @@
     newGroupId.setAttribute('aria-invalid', invalid);
     dupSubmit.removeAttribute('aria-busy'); // verify() always ends any busy() spinner state
     dupSubmit.disabled = invalid;
-    dupSubmit.innerHTML = '<i class="fa-solid fa-clone"></i> ' + text;
+    dupSubmit.innerHTML = text;
   }
 
   newGroupId.addEventListener('input', verify);
@@ -283,7 +276,7 @@
 
   $('duplicatorForm').addEventListener('submit', e => {
     e.preventDefault();
-    busy(dupSubmit, 'Duplicating…'); busy(refresh, '<i class="fa-solid fa-arrows-rotate"></i> Refreshing…');
+    busy(dupSubmit, 'Duplicating…'); busy(refresh, '<span class="fa-solid fa-arrows-rotate" aria-hidden="true"></span> Refreshing…');
     run('copyGroup', () => {
       toast('New group created!');
       $('duplicatorForm').reset();
@@ -348,7 +341,8 @@
   }
 
   // The button IS the status label: it shows the current state and clicking
-  // it toggles to the opposite one (the title spells out the action).
+  // it toggles to the opposite one. title gives a sighted tooltip; aria-label
+  // names the group and the action so each row's button is distinct to a reader.
   function updateRowStatus(settings) {
     const id = sanitizeForId(settings.email);
     const button = $(id + '-button');
@@ -356,15 +350,17 @@
     const listed = settings.includeInGlobalAddressList;
     if (listed == 'true') {
       button.outerHTML = '<button id="' + id + '-button" class="contrast" title="Unlist from Directory" '
+        + 'aria-label="Listed in directory: ' + settings.email + '. Activate to unlist." '
         + 'onclick="toggleRow(\'' + settings.email + '\',\'false\')">'
-        + '<i class="fa-solid fa-check"></i> Listed</button>';
+        + '<span class="fa-solid fa-check" aria-hidden="true"></span> Listed</button>';
     } else if (listed == 'false') {
       button.outerHTML = '<button id="' + id + '-button" class="contrast outline" title="Relist to Directory" '
+        + 'aria-label="Unlisted from directory: ' + settings.email + '. Activate to list." '
         + 'onclick="toggleRow(\'' + settings.email + '\',\'true\')">'
-        + '<i class="fa-solid fa-xmark"></i> Unlisted</button>';
+        + '<span class="fa-solid fa-xmark" aria-hidden="true"></span> Unlisted</button>';
     } else {
       button.outerHTML = '<button id="' + id + '-button" class="contrast outline" disabled>'
-        + '<mark><i class="fa-solid fa-triangle-exclamation"></i> Error</mark></button>';
+        + '<mark><span class="fa-solid fa-triangle-exclamation" aria-hidden="true"></span> Error</mark></button>';
     }
   }
 
