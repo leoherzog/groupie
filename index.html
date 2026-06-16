@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <base target="_top">
+  <title>Groupie</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7/css/all.min.css">
+  <style>
+    /* The ONLY custom CSS — everything else is Pico defaults. */
+    #toast { position: fixed; bottom: 1rem; right: 1rem; max-width: 24rem; z-index: 99; }
+    #toast:empty { display: none; } /* don't render an empty card when there's no message */
+    /* ins/del are used only for Pico's green/red colors — drop their underline/strikethrough */
+    #toast :is(ins, del) { text-decoration: none; }
+    header { display: flex; justify-content: space-between; align-items: center; }
+    #settingAnswer option.change  { color: var(--pico-ins-color); }   /* green = would be a change */
+    #settingAnswer option.current { color: var(--pico-muted-color); } /* muted = current value     */
+  </style>
+</head>
+<body>
+
+<header class="container">
+  <hgroup>
+    <h1><i class="fa-solid fa-users"></i> Groupie</h1>
+    <p>Google Group admin tools for <strong><?= domain ?></strong></p>
+  </hgroup>
+  <button id="refresh" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh Groups</button>
+</header>
+
+<main class="container">
+
+  <!-- Source group + tabbed actions (no tab selected until the user picks one) -->
+  <article>
+
+    <select id="sourceGroup" required><option>Loading…</option></select>
+
+    <div role="group" id="tabs">
+      <button type="button" data-tab="duplicate" class="outline"><i class="fa-solid fa-clone"></i> Duplicate</button>
+      <button type="button" data-tab="setting" class="outline"><i class="fa-solid fa-gear"></i> Change Setting</button>
+      <button type="button" data-tab="copy" class="outline"><i class="fa-solid fa-right-left"></i> Copy All Settings</button>
+    </div>
+
+    <!-- Tab 1: Duplicate the source group -->
+    <form id="duplicatorForm" data-panel="duplicate" hidden>
+      <label>New Group Email
+        <input type="email" id="newGroupId" placeholder="id@<?= domain ?>" required>
+      </label>
+      <label>New Group Name
+        <input type="text" id="newGroupName" placeholder="Name" required>
+      </label>
+      <label>New Group Description
+        <textarea id="newGroupDescription" rows="3" placeholder="Description"></textarea>
+      </label>
+      <button id="dupSubmit" type="submit"><i class="fa-solid fa-clone"></i> Duplicate Group</button>
+    </form>
+
+    <!-- Tab 2: Change a single setting on the source group -->
+    <form id="settingsForm" data-panel="setting" hidden>
+      <div role="group">
+        <label>Setting to Change
+          <select id="settingQuestion"></select>
+        </label>
+        <label>New Value
+          <select id="settingAnswer" disabled><option>Loading…</option></select>
+        </label>
+      </div>
+      <button id="panelSubmit" type="submit"><i class="fa-solid fa-check"></i> Update Setting</button>
+    </form>
+
+    <!-- Tab 3: Copy ALL settings from the source group to another -->
+    <form id="copierForm" data-panel="copy" hidden>
+      <label>Copy all settings to
+        <select id="copyTo"><option>Loading…</option></select>
+      </label>
+      <label><input type="checkbox" id="copyDescription" role="switch"> Also copy the group description</label>
+      <button id="copySubmit" type="submit"><i class="fa-solid fa-right-left"></i> Copy Settings</button>
+    </form>
+  </article>
+
+  <!-- Directory accordion -->
+  <details id="tool-directory">
+    <summary role="button"><i class="fa-solid fa-address-book"></i> Groups Directory</summary>
+    <figure>
+      <table>
+        <thead>
+          <tr><th>Group</th><th>Members</th><th>Directory Listing</th></tr>
+        </thead>
+        <tbody id="directoryRows"></tbody>
+      </table>
+    </figure>
+  </details>
+
+</main>
+
+<article id="toast" role="status"></article>
+
+<script>
+  const DOMAIN = '<?= domain ?>';
+  const ID_REGEX = new RegExp('^[a-zA-Z0-9._%+-]+@' + DOMAIN.replace(/\./g, '\\.') + '$');
+  let allGroups = [];           // cache from getAllGroups(); feeds every tool
+  let directoryLoaded = false;  // lazy-load gate for per-row roster/status fetches
+  let panelSettings = null;     // cached Groups Settings of the source group (keyed by .email)
+
+  // https://developers.google.com/workspace/admin/groups-settings/v1/reference/groups
+  // Field/value set verified against the live reference (June 2026). The originals'
+  // deprecated whoCanAdd/whoCanInvite are replaced by their merged successor
+  // whoCanModerateMembers, and showInGroupDirectory by whoCanDiscoverGroup.
+  const SETTINGS = {
+    whoCanViewGroup: { name: "Who has permission to view the group?", choices: [
+      { name: "Anyone", setting: "ANYONE_CAN_VIEW" },
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_VIEW" },
+      { name: "Members", setting: "ALL_MEMBERS_CAN_VIEW" },
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_VIEW" },
+      { name: "Owners", setting: "ALL_OWNERS_CAN_VIEW" } ] },
+    whoCanJoin: { name: "Who has permission to join the group?", choices: [
+      { name: "Anyone", setting: "ANYONE_CAN_JOIN" },
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_JOIN" },
+      { name: "Can request", setting: "CAN_REQUEST_TO_JOIN" },
+      { name: "Invited only", setting: "INVITED_CAN_JOIN" } ] },
+    whoCanViewMembership: { name: "Who has permission to view membership of the group?", choices: [
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_VIEW" },
+      { name: "Members", setting: "ALL_MEMBERS_CAN_VIEW" },
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_VIEW" } ] },
+    whoCanModerateMembers: { name: "Who has permission to manage members (add, invite, approve)?", choices: [
+      { name: "Members", setting: "ALL_MEMBERS" },
+      { name: "Owners and managers", setting: "OWNERS_AND_MANAGERS" },
+      { name: "Owners", setting: "OWNERS_ONLY" },
+      { name: "No one", setting: "NONE" } ] },
+    allowExternalMembers: { name: "Can users outside the domain view and join the group?", choices: [
+      { name: "Yes", setting: "true" }, { name: "No", setting: "false" } ] },
+    whoCanPostMessage: { name: "Who has permission to post messages to the group?", choices: [
+      { name: "Anyone", setting: "ANYONE_CAN_POST" },
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_POST" },
+      { name: "Members", setting: "ALL_MEMBERS_CAN_POST" },
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_POST" },
+      { name: "Owners", setting: "ALL_OWNERS_CAN_POST" },
+      { name: "No one", setting: "NONE_CAN_POST" } ] },
+    allowWebPosting: { name: "Can users post from the web?", choices: [
+      { name: "Yes", setting: "true" }, { name: "No", setting: "false" } ] },
+    messageModerationLevel: { name: "How are messages moderated?", choices: [
+      { name: "All", setting: "MODERATE_ALL_MESSAGES" },
+      { name: "Non-members", setting: "MODERATE_NON_MEMBERS" },
+      { name: "New members", setting: "MODERATE_NEW_MEMBERS" },
+      { name: "None", setting: "MODERATE_NONE" } ] },
+    spamModerationLevel: { name: "How to handle moderation for messages detected as spam?", choices: [
+      { name: "Allow", setting: "ALLOW" },
+      { name: "Moderate", setting: "MODERATE" },
+      { name: "Silently moderate", setting: "SILENTLY_MODERATE" },
+      { name: "Reject", setting: "REJECT" } ] },
+    whoCanDiscoverGroup: { name: "Who can discover the group in the Groups directory?", choices: [
+      { name: "Anyone", setting: "ANYONE_CAN_DISCOVER" },
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_DISCOVER" },
+      { name: "Members", setting: "ALL_MEMBERS_CAN_DISCOVER" } ] },
+    includeInGlobalAddressList: { name: "Show group in the domain's email address directory?", choices: [
+      { name: "Yes", setting: "true" }, { name: "No", setting: "false" } ] },
+    membersCanPostAsTheGroup: { name: "Allow members to post using the group email address?", choices: [
+      { name: "Yes", setting: "true" }, { name: "No", setting: "false" } ] },
+    whoCanLeaveGroup: { name: "Who can leave the group?", choices: [
+      { name: "Members", setting: "ALL_MEMBERS_CAN_LEAVE" },
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_LEAVE" },
+      { name: "No one", setting: "NONE_CAN_LEAVE" } ] },
+    whoCanContactOwner: { name: "Who can contact the owner of the group?", choices: [
+      { name: "Anyone", setting: "ANYONE_CAN_CONTACT" },
+      { name: "Anyone in the domain", setting: "ALL_IN_DOMAIN_CAN_CONTACT" },
+      { name: "Members", setting: "ALL_MEMBERS_CAN_CONTACT" },
+      { name: "Managers", setting: "ALL_MANAGERS_CAN_CONTACT" },
+      { name: "Owners", setting: "ALL_OWNERS_CAN_CONTACT" } ] }
+  };
+
+  // ----- Helpers -----
+  const run = (fn, onOk, ...args) =>
+    google.script.run.withSuccessHandler(onOk).withFailureHandler(showError)[fn](...args);
+
+  let toastTimer;
+  function toast(html, isError) {
+    document.getElementById('toast').innerHTML = isError
+      ? '<del><i class="fa-solid fa-triangle-exclamation"></i> ' + html + '</del>'
+      : '<ins><i class="fa-solid fa-thumbs-up"></i> ' + html + '</ins>';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { document.getElementById('toast').innerHTML = ''; }, 30000);
+  }
+
+  function showError(err) {
+    console.error(err); toast(err.message || err, true);
+    // A failed server call must never leave a control stuck in busy()/aria-busy.
+    [refresh, panelSubmit, copySubmit].forEach(ready);
+    verify(); // restores dupSubmit to the correct enabled/label state for the current fields
+  }
+
+  function busy(btn, label) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.innerHTML = label; }
+  function ready(btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.innerHTML = btn.dataset.label; }
+
+  const sanitizeForId = email => email.replace(/[@.]/g, '').trim().toLowerCase();
+
+  // ----- Element shortcuts -----
+  const $ = id => document.getElementById(id);
+  const sourceGroup = $('sourceGroup'), refresh = $('refresh'),
+        settingsForm = $('settingsForm'), settingQuestion = $('settingQuestion'),
+        settingAnswer = $('settingAnswer'), panelSubmit = $('panelSubmit'),
+        newGroupId = $('newGroupId'), newGroupName = $('newGroupName'),
+        newGroupDescription = $('newGroupDescription'), dupSubmit = $('dupSubmit'),
+        copyTo = $('copyTo'), copyDescription = $('copyDescription'), copySubmit = $('copySubmit'),
+        SELECTS = [sourceGroup, copyTo];
+
+  // Each button's markup is its canonical "ready" label; ready(btn) restores it.
+  // (dupSubmit is excluded — verify() owns its label and enabled state.)
+  [refresh, panelSubmit, copySubmit].forEach(b => b.dataset.label = b.innerHTML);
+
+  // ----- Tabs -----
+  const TABS = document.querySelectorAll('#tabs button');
+  function selectTab(name) {
+    TABS.forEach(b => {
+      const active = b.dataset.tab === name;
+      b.classList.toggle('outline', !active);
+      b.toggleAttribute('aria-current', active);
+    });
+    document.querySelectorAll('form[data-panel]').forEach(f => f.hidden = f.dataset.panel !== name);
+    if (name === 'setting') ensurePanelSettings();
+  }
+  TABS.forEach(b => b.addEventListener('click', () => selectTab(b.dataset.tab)));
+
+  // ----- Groups spine -----
+  function loadGroups() {
+    busy(refresh, 'Refreshing…');
+    busy(panelSubmit, 'Refreshing…'); busy(dupSubmit, 'Refreshing…');
+    busy(copySubmit, 'Refreshing…');
+    panelSettings = null;
+    SELECTS.forEach(s => s.innerHTML = '<option>Loading…</option>');
+    run('getAllGroups', renderGroups);
+  }
+
+  function renderGroups(groups) {
+    allGroups = groups;
+    const options = groups.map(g => '<option value="' + g.email + '">' + g.name + ' (' + g.email + ')</option>').join('');
+    SELECTS.forEach(s => s.innerHTML = options);
+    $('directoryRows').innerHTML = groups.map(g => {
+      const id = sanitizeForId(g.email);
+      const aliases = g.aliases ? ' (' + g.aliases.join(', ') + ')' : '';
+      return '<tr><td><strong>' + g.name + '</strong><br><small>' + g.email + aliases + '</small></td>'
+        + '<td>' + g.directMembersCount + '</td>'
+        + '<td><button id="' + id + '-button" class="contrast outline" disabled aria-busy="true">Loading…</button></td></tr>';
+    }).join('');
+    prefillDuplicator();        // verify() is the sole authority over dupSubmit's enabled state
+    if (!settingsForm.hidden) ensurePanelSettings();
+    else ready(panelSubmit);
+    if ($('tool-directory').open) { directoryLoaded = true; loadDirectory(); }
+    ready(copySubmit);
+    ready(refresh);
+  }
+
+  refresh.addEventListener('click', () => { directoryLoaded = false; loadGroups(); });
+
+  sourceGroup.addEventListener('change', () => {
+    prefillDuplicator();
+    if (!settingsForm.hidden) ensurePanelSettings();
+  });
+
+  // ----- Tab 1: Duplicate -----
+  function prefillDuplicator() {
+    // Prefills from the cached allGroups snapshot (AdminDirectory.Groups.list, which
+    // carries email/name/description) rather than a fresh per-selection get. Values can
+    // be stale until the next Refresh; loadGroups() re-fetches after any duplicate/refresh.
+    const g = allGroups.find(g => g.email === sourceGroup.value);
+    if (g) { newGroupId.value = g.email; newGroupName.value = g.name; newGroupDescription.value = g.description || ''; }
+    verify();
+  }
+
+  function verify() {
+    let invalid = true, text = 'Duplicate Group';
+    if (allGroups.some(g => g.email === newGroupId.value)) { text = 'ID Must Be Unique'; }
+    else if (!ID_REGEX.test(newGroupId.value)) { text = 'Invalid Group ID'; }
+    else if (newGroupDescription.value.length >= 4096) { text = 'Description is Too Long'; }
+    else { invalid = false; }
+    newGroupId.setAttribute('aria-invalid', invalid);
+    dupSubmit.removeAttribute('aria-busy'); // verify() always ends any busy() spinner state
+    dupSubmit.disabled = invalid;
+    dupSubmit.innerHTML = '<i class="fa-solid fa-clone"></i> ' + text;
+  }
+
+  newGroupId.addEventListener('input', verify);
+  newGroupDescription.addEventListener('input', verify);
+
+  $('duplicatorForm').addEventListener('submit', e => {
+    e.preventDefault();
+    busy(dupSubmit, 'Duplicating…'); busy(refresh, '<i class="fa-solid fa-arrows-rotate"></i> Refreshing…');
+    run('copyGroup', () => {
+      toast('New group created!');
+      $('duplicatorForm').reset();
+      loadGroups();
+    }, sourceGroup.value, newGroupId.value, newGroupName.value, newGroupDescription.value);
+  });
+
+  // ----- Tab 2: Change Setting -----
+  // Fetches the source group's settings only when the tab is (or becomes) visible,
+  // and only when the cache doesn't already hold this group's settings.
+  function ensurePanelSettings() {
+    if (panelSettings && panelSettings.email === sourceGroup.value) { renderPanelAnswer(); return; }
+    settingAnswer.disabled = true; settingAnswer.innerHTML = '<option>Loading…</option>';
+    busy(panelSubmit, 'Loading…');
+    run('getGroupSettings', s => { panelSettings = s; renderPanelAnswer(); }, sourceGroup.value);
+  }
+
+  function renderPanelAnswer() {
+    settingAnswer.innerHTML = SETTINGS[settingQuestion.value].choices
+      .map(c => '<option value="' + c.setting + '">' + c.name + '</option>').join('');
+    settingAnswer.disabled = false;
+    const raw = panelSettings[settingQuestion.value];
+    settingAnswer.value = raw;
+    [...settingAnswer.options].forEach(o => {
+      if (o.value === raw) { o.className = 'current'; o.textContent += ' (current)'; }
+      else { o.className = 'change'; }
+    });
+    ready(panelSubmit);
+  }
+
+  settingQuestion.addEventListener('change', () => { if (panelSettings) renderPanelAnswer(); });
+
+  settingsForm.addEventListener('submit', e => {
+    e.preventDefault();
+    busy(panelSubmit, 'Setting…');
+    const questionKey = settingQuestion.value, answerValue = settingAnswer.value;
+    const questionText = SETTINGS[questionKey].name;
+    const answerText = settingAnswer.options[settingAnswer.selectedIndex].textContent;
+    run('setGroupSetting', s => {
+      panelSettings = s;
+      renderPanelAnswer();
+      toast('"' + questionText + '" set to "' + answerText + '"');
+    }, sourceGroup.value, questionKey, answerValue);
+  });
+
+  // ----- Tab 3: Copy All Settings -----
+  $('copierForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const from = sourceGroup.value, to = copyTo.value;
+    if (from === to) { showError('Source and destination must be different groups'); return; }
+    if (!confirm('Overwrite ALL settings on ' + to + ' with the settings of ' + from + '?')) return;
+    busy(copySubmit, 'Copying…');
+    run('copySettings', () => {
+      toast('Success! Copied settings from ' + from + ' to ' + to + '.');
+      ready(copySubmit);
+    }, from, to, copyDescription.checked);
+  });
+
+  // ----- Directory table -----
+  function loadDirectory() {
+    allGroups.forEach((g, i) => setTimeout(() => run('getGroupSettings', updateRowStatus, g.email), i * 50));
+  }
+
+  // The button IS the status label: it shows the current state and clicking
+  // it toggles to the opposite one (the title spells out the action).
+  function updateRowStatus(settings) {
+    const id = sanitizeForId(settings.email);
+    const button = $(id + '-button');
+    if (!button) return;
+    const listed = settings.includeInGlobalAddressList;
+    if (listed == 'true') {
+      button.outerHTML = '<button id="' + id + '-button" class="contrast" title="Unlist from Directory" '
+        + 'onclick="toggleRow(\'' + settings.email + '\',\'false\')">'
+        + '<i class="fa-solid fa-check"></i> Listed</button>';
+    } else if (listed == 'false') {
+      button.outerHTML = '<button id="' + id + '-button" class="contrast outline" title="Relist to Directory" '
+        + 'onclick="toggleRow(\'' + settings.email + '\',\'true\')">'
+        + '<i class="fa-solid fa-xmark"></i> Unlisted</button>';
+    } else {
+      button.outerHTML = '<button id="' + id + '-button" class="contrast outline" disabled>'
+        + '<mark><i class="fa-solid fa-triangle-exclamation"></i> Error</mark></button>';
+    }
+  }
+
+  function toggleRow(email, desired) {
+    busy($(sanitizeForId(email) + '-button'), 'Setting…');
+    run('setGroupSetting', updateRowStatus, email, 'includeInGlobalAddressList', desired);
+  }
+
+  $('tool-directory').addEventListener('toggle', e => {
+    if (e.target.open && !directoryLoaded && allGroups.length) { directoryLoaded = true; loadDirectory(); }
+  });
+
+  // ----- Boot -----
+  document.addEventListener('DOMContentLoaded', () => {
+    settingQuestion.innerHTML = Object.keys(SETTINGS)
+      .map(k => '<option value="' + k + '">' + SETTINGS[k].name + '</option>').join('');
+    loadGroups();
+  });
+</script>
+</body>
+</html>
